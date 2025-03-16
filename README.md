@@ -8,7 +8,7 @@ The Amazon Reviews RAG (Retrieval Augmented Generation) System is a tool for ana
 
 ## Features
 
-- **Smart Review Analysis:** Ask natural language questions about food product reviews and get AI-powered answers
+- **Smart Review Analysis:** Ask questions about food product reviews and get AI-powered answers
 - **Vector Search:** Efficiently find the most relevant reviews using semantic search
 - **Interactive Web Interface:** User-friendly Streamlit app with a sleek dark gold theme
 - **Review Visualization:** See review data summarized with intuitive charts and metrics
