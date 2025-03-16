@@ -26,7 +26,7 @@ The Amazon Reviews RAG (Retrieval Augmented Generation) System is a tool for ana
 1. Clone this repository
 ```bash
 git clone https://github.com/yourusername/amazon-reviews-rag.git
-cd amazon-reviews-rag
+cd AmazonFood-RAG-Imp
 ```
 
 2. Install required dependencies
