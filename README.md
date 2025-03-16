@@ -36,7 +36,7 @@ pip install -r requirements.txt
 
 3. Run the Streamlit web interface
 ```bash
-streamlit run app.py
+streamlit run StreamlitApp.py
 ```
 
 ### Data Format
