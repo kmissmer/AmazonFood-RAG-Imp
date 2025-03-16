@@ -4,9 +4,10 @@ import time
 import random
 import logging
 import json
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 from functools import lru_cache
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 import numpy as np
@@ -15,7 +16,6 @@ import numpy as np
 from langchain_huggingface import HuggingFaceEmbeddings, HuggingFacePipeline
 from langchain_community.vectorstores import Chroma
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.chains.retrieval_qa.base import RetrievalQA
 from langchain.schema import Document
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
@@ -23,6 +23,7 @@ from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import EnsembleRetriever
 from langchain.schema.runnable import RunnablePassthrough
 from dotenv import load_dotenv
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
 
 # Configure logging
 logging.basicConfig(
@@ -32,86 +33,28 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class AmazonReviewsRAG:
-    def __init__(
-        self, 
-        csv_path: str, 
-        model_id: str = "google/flan-t5-base", 
-        limit: int = 5000,
-        chunk_size: int = 1000,
-        chunk_overlap: int = 200,
-        cache_size: int = 100
-    ):
+
+class DataProcessor:
+    """Handles data loading and preprocessing operations"""
+    
+    @staticmethod
+    def load_reviews(csv_path: str, limit: int) -> pd.DataFrame:
         """
-        Initialize the Amazon Reviews RAG system.
+        Load and preprocess Amazon reviews from CSV.
         
         Args:
-            csv_path (str): Path to the Amazon reviews CSV file
-            model_id (str): HuggingFace model ID
-            limit (int): Maximum number of reviews to process
-            chunk_size (int): Size of text chunks for embedding
-            chunk_overlap (int): Overlap between text chunks
-            cache_size (int): Size of query cache
-        """
-        # Load environment variables
-        load_dotenv()
-        
-        # Configuration
-        self.csv_path = csv_path
-        self.model_id = model_id
-        self.limit = limit
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
-        self.cache_size = cache_size
-        
-        # Initialize components
-        self.df = None
-        self.review_docs = None
-        self.chunks = None
-        self.vectorstore = None
-        self.bm25_retriever = None
-        self.ensemble_retriever = None
-        self.llm = None
-        self.qa_chain = None
-        
-        # Default prompt template
-        self.default_prompt_template = """Analyze the following reviews to answer the question comprehensively (more than just yes or no).
-
-Context from reviews:
-{context}
-
-Question: {question}
-
-Provide a detailed, insightful answer based on the review context."""
-        
-        # Feedback storage
-        self.feedback_file = "feedback_log.jsonl"
-        
-        # Validate inputs
-        self._validate_inputs()
-    
-    def _validate_inputs(self):
-        """Validate input parameters and file existence."""
-        if not os.path.exists(self.csv_path):
-            raise FileNotFoundError(f"CSV file not found: {self.csv_path}")
-        
-        # Validate model and configuration
-        if not self.model_id:
-            raise ValueError("A valid HuggingFace model ID must be provided")
-    
-    def load_reviews(self) -> pd.DataFrame:
-        """
-        Load and preprocess Amazon reviews.
-        
+            csv_path: Path to the CSV file
+            limit: Maximum number of reviews to load
+            
         Returns:
-            pd.DataFrame: Preprocessed reviews DataFrame
+            Preprocessed DataFrame of reviews
         """
-        logger.info(f"Loading reviews from {self.csv_path}")
+        logger.info(f"Loading reviews from {csv_path}")
         
         try:
             df = pd.read_csv(
-                self.csv_path, 
-                nrows=self.limit,
+                csv_path, 
+                nrows=limit,
                 dtype={
                     'ProductId': str,
                     'UserId': str,
@@ -146,17 +89,18 @@ Provide a detailed, insightful answer based on the review context."""
             logger.error(f"Error loading reviews: {e}")
             raise
     
-    def prepare_documents(self, df: pd.DataFrame) -> List[Document]:
+    @staticmethod
+    def convert_to_documents(df: pd.DataFrame) -> List[Document]:
         """
         Convert DataFrame to LangChain documents.
         
         Args:
-            df (pd.DataFrame): Preprocessed reviews DataFrame
+            df: Preprocessed reviews DataFrame
         
         Returns:
-            List[Document]: List of LangChain documents
+            List of LangChain documents with metadata
         """
-        logger.info("Preparing review documents")
+        logger.info("Converting DataFrame to LangChain documents")
         
         documents = []
         for _, row in df.iterrows():
@@ -172,7 +116,7 @@ Provide a detailed, insightful answer based on the review context."""
                 "is_negative": float(row["Score"]) <= 2.0,
                 "is_neutral": 2.0 < float(row["Score"]) < 4.0,
                 "review_length": len(row["Text"]),
-                "product_category": self._extract_category(row["ProductId"]),
+                "product_category": DataProcessor._extract_category(row["ProductId"]),
             }
             
             # Enhanced content structure
@@ -190,36 +134,51 @@ Full Review:
         logger.info(f"Created {len(documents)} document objects")
         return documents
     
-    def _extract_category(self, product_id):
-        """Extract product category from ID if possible."""
-        # This is a placeholder - in a real implementation, you might 
-        # have a mapping of product IDs to categories
+    @staticmethod
+    def _extract_category(product_id: str) -> str:
+        """Extract product category from ID (placeholder implementation)"""
+        # This would be replaced with actual category lookup in production
         return "Unknown"
+
+
+class TextChunker:
+    """Handles document chunking for efficient retrieval"""
+    
+    def __init__(self, chunk_size: int = 1000, chunk_overlap: int = 200):
+        """
+        Initialize chunker with configurable parameters.
+        
+        Args:
+            chunk_size: Size of text chunks for embedding
+            chunk_overlap: Overlap between text chunks
+        """
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
     
     def hierarchical_chunking(self, documents: List[Document]) -> List[Document]:
         """
         Implement hierarchical chunking strategy.
         
         Args:
-            documents (List[Document]): Original documents
+            documents: Original documents
         
         Returns:
-            List[Document]: Hierarchically chunked documents
+            Hierarchically chunked documents
         """
         logger.info("Performing hierarchical chunking")
         
         # Parent chunks (larger context)
         parent_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=2000, 
-            chunk_overlap=200,
+            chunk_size=self.chunk_size * 2, 
+            chunk_overlap=self.chunk_overlap,
             separators=["\n\n", "\n", ". ", " ", ""]
         )
         parent_chunks = parent_splitter.split_documents(documents)
         
         # Child chunks (more granular)
         child_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=500, 
-            chunk_overlap=50,
+            chunk_size=self.chunk_size // 2, 
+            chunk_overlap=self.chunk_overlap // 4,
             separators=["\n\n", "\n", ". ", " ", ""]
         )
         
@@ -241,16 +200,22 @@ Full Review:
         
         logger.info(f"Created {len(all_chunks)} hierarchical chunks from {len(documents)} documents")
         return all_chunks
+
+
+class VectorStoreManager:
+    """Manages vector embedding and storage operations"""
     
-    def create_vector_store(self, chunks: List[Document]):
+    @staticmethod
+    def create_vector_store(chunks: List[Document], persist_dir: str = "./amazon_reviews_db") -> Chroma:
         """
         Create vector store with embeddings.
         
         Args:
-            chunks (List[Document]): Chunked documents
-        
+            chunks: Chunked documents
+            persist_dir: Directory to persist vector store
+            
         Returns:
-            Chroma: Vector store
+            Initialized vector store
         """
         logger.info("Creating vector store with embeddings")
         
@@ -268,7 +233,7 @@ Full Review:
                 vectorstore = Chroma.from_documents(
                     documents=chunks,
                     embedding=embeddings,
-                    persist_directory="./amazon_reviews_db"
+                    persist_directory=persist_dir
                 )
                 
                 logger.info("Vector store created successfully")
@@ -277,19 +242,32 @@ Full Review:
             except Exception as e:
                 logger.warning(f"Failed with {model_name}: {e}")
         
-        raise RuntimeError("Could not create vector store with any available method")
+        raise RuntimeError("Could not create vector store with any available embedding model")
+
+
+class RetrievalSystem:
+    """Manages document retrieval operations"""
     
-    def setup_hybrid_retrieval(self, chunks: List[Document]):
+    def __init__(self, vectorstore: Chroma, chunks: List[Document]):
         """
-        Set up hybrid retrieval with vector store and BM25.
+        Initialize retrieval system.
         
         Args:
-            chunks (List[Document]): Document chunks
+            vectorstore: Vector database for semantic search
+            chunks: Document chunks for BM25 retrieval
         """
+        self.vectorstore = vectorstore
+        self.chunks = chunks
+        self.bm25_retriever = None
+        self.ensemble_retriever = None
+        self._setup_hybrid_retrieval()
+    
+    def _setup_hybrid_retrieval(self):
+        """Set up hybrid retrieval with vector store and BM25"""
         logger.info("Setting up hybrid retrieval system")
         
         # Create BM25 retriever
-        self.bm25_retriever = BM25Retriever.from_documents(chunks)
+        self.bm25_retriever = BM25Retriever.from_documents(self.chunks)
         self.bm25_retriever.k = 5
         
         # Vector retriever
@@ -303,12 +281,96 @@ Full Review:
         
         logger.info("Hybrid retrieval system configured")
     
-    def setup_huggingface_model(self, max_retries: int = 3):
+    def retrieve_documents(self, query: str, filters: Optional[Dict] = None) -> List[Document]:
+        """
+        Retrieve relevant documents for a query.
+        
+        Args:
+            query: User query
+            filters: Optional metadata filters
+            
+        Returns:
+            List of retrieved documents
+        """
+        if filters:
+            return self.vectorstore.similarity_search(query, k=8, filter=filters)
+        else:
+            return self.ensemble_retriever.invoke(query)
+    
+    def evaluate_relevance(self, query: str, documents: List[Document]) -> List[Tuple[Document, float]]:
+        """
+        Score relevance of retrieved documents.
+        
+        Args:
+            query: User query
+            documents: Retrieved documents
+            
+        Returns:
+            Documents with relevance scores
+        """
+        logger.info(f"Evaluating relevance of {len(documents)} retrieved documents")
+        
+        # Simple heuristic scoring based on keyword overlap
+        query_terms = set(query.lower().split())
+        scored_docs = []
+        
+        for doc in documents:
+            content = doc.page_content.lower()
+            
+            # Count query term occurrences
+            term_matches = sum(1 for term in query_terms if term in content)
+            
+            # Calculate relevance score (0-10)
+            if len(query_terms) > 0:
+                match_ratio = term_matches / len(query_terms)
+                base_score = match_ratio * 8  # Scale to 0-8
+            else:
+                base_score = 5
+                
+            # Bonus for metadata matches
+            metadata = doc.metadata
+            metadata_bonus = 0
+            
+            # Rating-specific queries
+            if "positive" in query.lower() and metadata.get("is_positive", False):
+                metadata_bonus += 1
+            elif "negative" in query.lower() and metadata.get("is_negative", False):
+                metadata_bonus += 1
+                
+            # Recency bonus
+            if "recent" in query.lower() and metadata.get("date", "Unknown") >= "2020":
+                metadata_bonus += 1
+                
+            final_score = min(base_score + metadata_bonus, 10)
+            scored_docs.append((doc, final_score))
+        
+        # Sort by relevance score
+        return sorted(scored_docs, key=lambda x: x[1], reverse=True)
+
+
+class ModelManager:
+    """Manages language model initialization and operations"""
+    
+    def __init__(self, model_id: str = "google/flan-t5-base"):
+        """
+        Initialize model manager.
+        
+        Args:
+            model_id: HuggingFace model ID
+        """
+        self.model_id = model_id
+        self.llm = None
+        
+    def initialize_model(self, max_retries: int = 3):
         """
         Initialize HuggingFace model with robust error handling.
-        """
-        from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
         
+        Args:
+            max_retries: Maximum number of retry attempts
+            
+        Returns:
+            Initialized language model
+        """
         api_key = os.environ.get("HUGGINGFACEHUB_API_TOKEN")
         if not api_key:
             raise ValueError(
@@ -334,7 +396,7 @@ Full Review:
                     logger.info(f"Backing off for {backoff_time:.2f} seconds")
                     time.sleep(backoff_time)
                 
-                # Use HuggingFacePipeline instead of HuggingFaceEndpoint
+                # Use HuggingFacePipeline
                 tokenizer = AutoTokenizer.from_pretrained(current_model)
                 model = AutoModelForSeq2SeqLM.from_pretrained(current_model)
                 
@@ -359,6 +421,7 @@ Full Review:
                 
                 if test_response and len(test_response) > 10:
                     logger.info(f"✅ Model {current_model} successfully initialized")
+                    self.llm = llm
                     return llm
                 
             except Exception as e:
@@ -366,41 +429,40 @@ Full Review:
         
         raise RuntimeError("Failed to initialize any HuggingFace model")
     
-    def rewrite_query(self, original_query: str) -> str:
+    def rewrite_query(self, query: str) -> str:
         """
         Expand the original query to improve retrieval.
         
         Args:
-            original_query (str): User's original query
-        
+            query: User's original query
+            
         Returns:
-            str: Rewritten query
+            Rewritten query
         """
-        logger.info(f"Rewriting query: {original_query}")
-        
-        # Simple rule-based query expansion
-        if len(original_query) < 10:
+        if self.llm is None:
+            return query
+            
+        if len(query) < 10:
             # For very short queries, use the model to expand
-            prompt = f"Rewrite this search query to improve retrieval from product reviews: '{original_query}'"
+            prompt = f"Rewrite this search query to improve retrieval from product reviews: '{query}'"
             try:
                 rewritten = self.llm.invoke(prompt)
                 logger.info(f"Query rewritten to: {rewritten}")
                 return rewritten
             except Exception as e:
                 logger.warning(f"Query rewriting failed: {e}")
-                return original_query
         
-        return original_query
-    
+        return query
+        
     def get_prompt_template(self, query: str) -> str:
         """
         Select appropriate prompt template based on query type.
         
         Args:
-            query (str): User query
-        
+            query: User query
+            
         Returns:
-            str: Prompt template
+            Prompt template
         """
         query_lower = query.lower()
         
@@ -438,67 +500,36 @@ Question: {question}
 Focus on the functionality and performance aspects mentioned in the reviews."""
         
         # Default template
-        return self.default_prompt_template
+        return """Analyze the following reviews to answer the question comprehensively (more than just yes or no).
+
+Context from reviews:
+{context}
+
+Question: {question}
+
+Provide a detailed, insightful answer based on the review context."""
+
+
+class FeedbackCollector:
+    """Collects and stores user feedback"""
     
-    def evaluate_retrieval(self, query: str, retrieved_docs: List[Document]) -> List[tuple]:
+    def __init__(self, feedback_file: str = "feedback_log.jsonl"):
         """
-        Score relevance of retrieved documents.
+        Initialize feedback collector.
         
         Args:
-            query (str): User query
-            retrieved_docs (List[Document]): Retrieved documents
-        
-        Returns:
-            List[tuple]: Documents with relevance scores
+            feedback_file: Path to feedback log file
         """
-        logger.info(f"Evaluating relevance of {len(retrieved_docs)} retrieved documents")
-        
-        # Simple heuristic scoring based on keyword overlap
-        query_terms = set(query.lower().split())
-        scored_docs = []
-        
-        for doc in retrieved_docs:
-            content = doc.page_content.lower()
-            
-            # Count query term occurrences
-            term_matches = sum(1 for term in query_terms if term in content)
-            
-            # Calculate relevance score (0-10)
-            # More sophisticated in practice, but this is a simple heuristic
-            if len(query_terms) > 0:
-                match_ratio = term_matches / len(query_terms)
-                base_score = match_ratio * 8  # Scale to 0-8
-            else:
-                base_score = 5
-                
-            # Bonus for metadata matches
-            metadata = doc.metadata
-            metadata_bonus = 0
-            
-            # Rating-specific queries
-            if "positive" in query.lower() and metadata.get("is_positive", False):
-                metadata_bonus += 1
-            elif "negative" in query.lower() and metadata.get("is_negative", False):
-                metadata_bonus += 1
-                
-            # Recency bonus
-            if "recent" in query.lower() and metadata.get("date", "Unknown") >= "2020":
-                metadata_bonus += 1
-                
-            final_score = min(base_score + metadata_bonus, 10)
-            scored_docs.append((doc, final_score))
-        
-        # Sort by relevance score
-        return sorted(scored_docs, key=lambda x: x[1], reverse=True)
+        self.feedback_file = feedback_file
     
     def collect_feedback(self, query: str, result: Dict, feedback_score: int):
         """
         Store user feedback for continuous improvement.
         
         Args:
-            query (str): User query
-            result (Dict): Query result
-            feedback_score (int): User feedback score (1-5)
+            query: User query
+            result: Query result
+            feedback_score: User feedback score (1-5)
         """
         logger.info(f"Collecting feedback. Score: {feedback_score}/5")
         
@@ -509,20 +540,85 @@ Focus on the functionality and performance aspects mentioned in the reviews."""
             "timestamp": datetime.now().isoformat()
         }
         
+        # Ensure directory exists
+        Path(self.feedback_file).parent.mkdir(parents=True, exist_ok=True)
+        
         # Append to feedback log
         with open(self.feedback_file, "a") as f:
             f.write(json.dumps(feedback_record) + "\n")
+
+
+class AmazonReviewsRAG:
+    """Main class for the Amazon Reviews RAG system"""
+    
+    def __init__(
+        self, 
+        csv_path: str, 
+        model_id: str = "google/flan-t5-base", 
+        limit: int = 5000,
+        chunk_size: int = 1000,
+        chunk_overlap: int = 200,
+        cache_size: int = 100
+    ):
+        """
+        Initialize the Amazon Reviews RAG system.
+        
+        Args:
+            csv_path: Path to the Amazon reviews CSV file
+            model_id: HuggingFace model ID
+            limit: Maximum number of reviews to process
+            chunk_size: Size of text chunks for embedding
+            chunk_overlap: Overlap between text chunks
+            cache_size: Size of query cache
+        """
+        # Load environment variables
+        load_dotenv()
+        
+        # Configuration
+        self.csv_path = csv_path
+        self.model_id = model_id
+        self.limit = limit
+        self.cache_size = cache_size
+        
+        # Initialize components
+        self.data_processor = DataProcessor()
+        self.chunker = TextChunker(chunk_size, chunk_overlap)
+        self.vector_store_manager = VectorStoreManager()
+        self.model_manager = ModelManager(model_id)
+        self.feedback_collector = FeedbackCollector()
+        
+        # Initialize data structures
+        self.df = None
+        self.review_docs = None
+        self.chunks = None
+        self.vectorstore = None
+        self.retrieval_system = None
+        
+        # Validate inputs
+        self._validate_inputs()
+    
+    def _validate_inputs(self):
+        """Validate input parameters and file existence"""
+        if not os.path.exists(self.csv_path):
+            raise FileNotFoundError(f"CSV file not found: {self.csv_path}")
+        
+        # Validate model and configuration
+        if not self.model_id:
+            raise ValueError("A valid HuggingFace model ID must be provided")
     
     def initialize(self):
-        """
-        Complete initialization process.
-        """
-        self.df = self.load_reviews()
-        self.review_docs = self.prepare_documents(self.df)
-        self.chunks = self.hierarchical_chunking(self.review_docs)
-        self.vectorstore = self.create_vector_store(self.chunks)
-        self.setup_hybrid_retrieval(self.chunks)
-        self.llm = self.setup_huggingface_model()
+        """Complete initialization process"""
+        # Load and process data
+        self.df = self.data_processor.load_reviews(self.csv_path, self.limit)
+        self.review_docs = self.data_processor.convert_to_documents(self.df)
+        self.chunks = self.chunker.hierarchical_chunking(self.review_docs)
+        
+        # Initialize vector store and retrieval system
+        self.vectorstore = self.vector_store_manager.create_vector_store(self.chunks)
+        self.retrieval_system = RetrievalSystem(self.vectorstore, self.chunks)
+        
+        # Initialize language model
+        self.model_manager.initialize_model()
         
         logger.info("RAG system initialization complete")
         return self
@@ -533,62 +629,55 @@ Focus on the functionality and performance aspects mentioned in the reviews."""
         Cache query results for performance.
         
         Args:
-            query_str (str): User query
-            filters_str (str): JSON string of filters
+            query_str: User query
+            filters_str: JSON string of filters
         
         Returns:
-            Dict: Query results
+            Query results
         """
         # Convert filters_str back to dict if not None
         filters = json.loads(filters_str) if filters_str else None
-        return self.multi_stage_query(query_str, filters)
+        return self._process_query(query_str, filters)
     
     def query(self, query: str, filters: Optional[Dict] = None):
         """
         User-facing query method with caching.
         
         Args:
-            query (str): User query
-            filters (Optional[Dict]): Optional filters
+            query: User query
+            filters: Optional filters
             
         Returns:
-            Dict: Query results
+            Query results
         """
         # For caching to work, convert filters to a string
         filters_str = json.dumps(filters) if filters else None
         return self.cached_query(query, filters_str)
     
-    def multi_stage_query(self, query: str, filters: Optional[Dict] = None):
+    def _process_query(self, query: str, filters: Optional[Dict] = None):
         """
         Multi-stage retrieval and generation pipeline.
         
         Args:
-            query (str): User query
-            filters (Optional[Dict]): Optional filters
+            query: User query
+            filters: Optional filters
             
         Returns:
-            Dict: Query results with answer and source documents
+            Query results with answer and source documents
         """
         logger.info(f"Processing query through multi-stage pipeline: '{query}'")
         start_time = time.time()
         
         try:
             # Stage 1: Query rewriting and expansion
-            rewritten_query = self.rewrite_query(query)
+            rewritten_query = self.model_manager.rewrite_query(query)
             
             # Stage 2: Hybrid retrieval
-            if filters:
-                initial_docs = self.vectorstore.similarity_search(
-                    rewritten_query, k=8, filter=filters
-                )
-            else:
-                initial_docs = self.ensemble_retriever.invoke(rewritten_query)
-
-            
+            initial_docs = self.retrieval_system.retrieve_documents(rewritten_query, filters)
             logger.info(f"Retrieved {len(initial_docs)} initial documents")
             
             # Stage 3: Re-ranking based on relevance
-            ranked_docs = self.evaluate_retrieval(query, initial_docs)
+            ranked_docs = self.retrieval_system.evaluate_relevance(query, initial_docs)
             
             # Filter to high-relevance documents (score > 5)
             top_docs = [doc for doc, score in ranked_docs if score > 5][:4]
@@ -602,15 +691,14 @@ Focus on the functionality and performance aspects mentioned in the reviews."""
             # Stage 4: Generate response with dynamically selected prompt
             context = "\n\n".join([doc.page_content for doc in top_docs])
             
-            prompt_template = self.get_prompt_template(query)
+            prompt_template = self.model_manager.get_prompt_template(query)
             prompt = PromptTemplate(
                 template=prompt_template,
                 input_variables=["context", "question"]
             )
             
-            chain = {"context": RunnablePassthrough(), "question": RunnablePassthrough()} | prompt | self.llm
+            chain = {"context": RunnablePassthrough(), "question": RunnablePassthrough()} | prompt | self.model_manager.llm
             answer = chain.invoke({"context": context, "question": query})
-
             
             query_time = time.time() - start_time
             logger.info(f"Query processed in {query_time:.2f}s")
@@ -629,12 +717,16 @@ Focus on the functionality and performance aspects mentioned in the reviews."""
                 "error": str(e)
             }
     
+    def collect_feedback(self, query: str, result: Dict, feedback_score: int):
+        """Store user feedback"""
+        self.feedback_collector.collect_feedback(query, result, feedback_score)
+    
     def get_summary(self):
         """
         Generate a summary of the loaded dataset.
         
         Returns:
-            Dict: Dataset summary statistics
+            Dataset summary statistics
         """
         if self.df is None:
             raise ValueError("Dataset not loaded. Call initialize() first.")
@@ -652,9 +744,7 @@ Focus on the functionality and performance aspects mentioned in the reviews."""
 
 
 def main():
-    """   
-    Main execution function for Amazon Reviews RAG.
-    """
+    """Main execution function for Amazon Reviews RAG"""
     # Default configurations
     csv_path = "Reviews.csv"
     model_id = "google/flan-t5-base"
@@ -742,6 +832,7 @@ def main():
     
     except Exception as e:
         print(f"An error occurred during initialization: {e}")
+
 
 if __name__ == "__main__":
     main()
