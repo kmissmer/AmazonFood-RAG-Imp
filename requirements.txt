@@ -1,0 +1,11 @@
+pandas
+python-dotenv
+transformers
+torch
+langchain_huggingface
+langchain_community
+langchain_text_splitters
+langchain_core
+streamlit
+chromadb
+sentence-transformers

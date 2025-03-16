@@ -1,29 +1,23 @@
 import os
 import sys
 import time
-import random
 import logging
 import json
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Tuple
 from functools import lru_cache
 from datetime import datetime
 from pathlib import Path
-
 import pandas as pd
-import numpy as np
-
-# Langchain and HuggingFace imports
-from langchain_huggingface import HuggingFaceEmbeddings, HuggingFacePipeline
-from langchain_community.vectorstores import Chroma
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.schema import Document
-from langchain.prompts import PromptTemplate
-from langchain.chains import LLMChain
-from langchain_community.retrievers import BM25Retriever
-from langchain.retrievers import EnsembleRetriever
-from langchain.schema.runnable import RunnablePassthrough
 from dotenv import load_dotenv
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
+
+#Langchain Stuff
+from langchain_huggingface import HuggingFaceEmbeddings, HuggingFacePipeline
+from langchain_community.vectorstores import Chroma
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
+from langchain_core.prompts import PromptTemplate
+from langchain_core.runnables import RunnablePassthrough
 
 # Configure logging
 logging.basicConfig(
@@ -122,12 +116,12 @@ class DataProcessor:
             # Enhanced content structure
             content = f"""Review: {row['Summary']}
 
-Rating: {row['Score']} out of 5 stars
-Date: {row['Date']}
-Product ID: {row['ProductId']}
+            Rating: {row['Score']} out of 5 stars
+            Date: {row['Date']}
+            Product ID: {row['ProductId']}  
 
-Full Review:
-{row['Text']}"""
+            Full Review:
+            {row['Text']}"""
             
             documents.append(Document(page_content=content, metadata=metadata))
         
@@ -155,51 +149,28 @@ class TextChunker:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
     
-    def hierarchical_chunking(self, documents: List[Document]) -> List[Document]:
+    def chunk_documents(self, documents: List[Document]) -> List[Document]:
         """
-        Implement hierarchical chunking strategy.
+        Simple document chunking with fixed size and overlap.
         
         Args:
             documents: Original documents
         
         Returns:
-            Hierarchically chunked documents
+            Chunked documents
         """
-        logger.info("Performing hierarchical chunking")
+        logger.info("Performing basic document chunking")
         
-        # Parent chunks (larger context)
-        parent_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=self.chunk_size * 2, 
-            chunk_overlap=self.chunk_overlap,
-            separators=["\n\n", "\n", ". ", " ", ""]
-        )
-        parent_chunks = parent_splitter.split_documents(documents)
-        
-        # Child chunks (more granular)
-        child_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=self.chunk_size // 2, 
-            chunk_overlap=self.chunk_overlap // 4,
-            separators=["\n\n", "\n", ". ", " ", ""]
+        # Simple text splitter with standard parameters
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=self.chunk_size, 
+            chunk_overlap=self.chunk_overlap
         )
         
-        all_chunks = []
-        for i, parent in enumerate(parent_chunks):
-            children = child_splitter.split_documents([parent])
-            
-            # Link children to parent for context preservation
-            for child in children:
-                # Copy parent metadata
-                for key, value in parent.metadata.items():
-                    if key not in child.metadata:
-                        child.metadata[key] = value
-                
-                # Add parent relationship
-                child.metadata["parent_id"] = i
-                child.metadata["parent_content"] = parent.page_content[:200] + "..."
-                all_chunks.append(child)
+        chunked_docs = splitter.split_documents(documents)
         
-        logger.info(f"Created {len(all_chunks)} hierarchical chunks from {len(documents)} documents")
-        return all_chunks
+        logger.info(f"Created {len(chunked_docs)} chunks from {len(documents)} documents")
+        return chunked_docs
 
 
 class VectorStoreManager:
@@ -208,7 +179,7 @@ class VectorStoreManager:
     @staticmethod
     def create_vector_store(chunks: List[Document], persist_dir: str = "./amazon_reviews_db") -> Chroma:
         """
-        Create vector store with embeddings.
+        Create vector store with single embedding model.
         
         Args:
             chunks: Chunked documents
@@ -219,71 +190,51 @@ class VectorStoreManager:
         """
         logger.info("Creating vector store with embeddings")
         
-        embedding_models = [
-            "sentence-transformers/all-MiniLM-L6-v2",
-            "sentence-transformers/paraphrase-MiniLM-L3-v2",
-            "hkunlp/instructor-base"
-        ]
+        # Use a single reliable embedding model
+        embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
         
-        for model_name in embedding_models:
-            try:
-                logger.info(f"Trying embedding model: {model_name}")
-                embeddings = HuggingFaceEmbeddings(model_name=model_name)
-                
-                vectorstore = Chroma.from_documents(
-                    documents=chunks,
-                    embedding=embeddings,
-                    persist_directory=persist_dir
-                )
-                
-                logger.info("Vector store created successfully")
-                return vectorstore
+        try:
+            logger.info(f"Using embedding model: {embedding_model}")
             
-            except Exception as e:
-                logger.warning(f"Failed with {model_name}: {e}")
-        
-        raise RuntimeError("Could not create vector store with any available embedding model")
+            # Configure embeddings
+            embeddings = HuggingFaceEmbeddings(
+                model_name=embedding_model,
+                model_kwargs={"device": "cpu"}
+            )
+            
+            # Create vector store
+            vectorstore = Chroma.from_documents(
+                documents=chunks,
+                embedding=embeddings,
+                persist_directory=persist_dir
+            )
+            
+            logger.info("Vector store created successfully")
+            return vectorstore
+            
+        except Exception as e:
+            logger.error(f"Failed to create vector store: {e}")
+            raise
 
 
 class RetrievalSystem:
-    """Manages document retrieval operations"""
+    """Manages vector-only document retrieval operations"""
     
     def __init__(self, vectorstore: Chroma, chunks: List[Document]):
         """
-        Initialize retrieval system.
+        Initialize vector-only retrieval system.
         
         Args:
             vectorstore: Vector database for semantic search
-            chunks: Document chunks for BM25 retrieval
+            chunks: Document chunks
         """
         self.vectorstore = vectorstore
         self.chunks = chunks
-        self.bm25_retriever = None
-        self.ensemble_retriever = None
-        self._setup_hybrid_retrieval()
-    
-    def _setup_hybrid_retrieval(self):
-        """Set up hybrid retrieval with vector store and BM25"""
-        logger.info("Setting up hybrid retrieval system")
-        
-        # Create BM25 retriever
-        self.bm25_retriever = BM25Retriever.from_documents(self.chunks)
-        self.bm25_retriever.k = 5
-        
-        # Vector retriever
-        vector_retriever = self.vectorstore.as_retriever(search_kwargs={"k": 5})
-        
-        # Create ensemble retriever
-        self.ensemble_retriever = EnsembleRetriever(
-            retrievers=[vector_retriever, self.bm25_retriever],
-            weights=[0.7, 0.3]
-        )
-        
-        logger.info("Hybrid retrieval system configured")
+        logger.info("Vector-only retrieval system initialized")
     
     def retrieve_documents(self, query: str, filters: Optional[Dict] = None) -> List[Document]:
         """
-        Retrieve relevant documents for a query.
+        Retrieve relevant documents for a query using only vector search.
         
         Args:
             query: User query
@@ -292,10 +243,8 @@ class RetrievalSystem:
         Returns:
             List of retrieved documents
         """
-        if filters:
-            return self.vectorstore.similarity_search(query, k=8, filter=filters)
-        else:
-            return self.ensemble_retriever.invoke(query)
+        # Only use vector search directly
+        return self.vectorstore.similarity_search(query, k=8, filter=filters)
     
     def evaluate_relevance(self, query: str, documents: List[Document]) -> List[Tuple[Document, float]]:
         """
@@ -361,73 +310,34 @@ class ModelManager:
         self.model_id = model_id
         self.llm = None
         
-    def initialize_model(self, max_retries: int = 3):
+    def initialize_model(self):
         """
-        Initialize HuggingFace model with robust error handling.
+        Simple model initialization without fallbacks.
         
-        Args:
-            max_retries: Maximum number of retry attempts
-            
         Returns:
             Initialized language model
         """
-        api_key = os.environ.get("HUGGINGFACEHUB_API_TOKEN")
-        if not api_key:
-            raise ValueError(
-                "HUGGINGFACEHUB_API_TOKEN not found. "
-                "Get your token from https://huggingface.co/settings/tokens"
-            )
-        
-        # Fallback models
-        fallback_models = [
-            self.model_id,
-            "google/flan-t5-small",
-            "google/flan-t5-base",
-            "facebook/bart-large-cnn"  # More reliable alternative
-        ]
-        
-        for attempt, current_model in enumerate(fallback_models):
-            try:
-                logger.info(f"Attempt {attempt+1} - Using model: {current_model}")
-                
-                # Exponential backoff with jitter
-                if attempt > 0:
-                    backoff_time = (2 ** attempt) + (random.random() * 2)
-                    logger.info(f"Backing off for {backoff_time:.2f} seconds")
-                    time.sleep(backoff_time)
-                
-                # Use HuggingFacePipeline
-                tokenizer = AutoTokenizer.from_pretrained(current_model)
-                model = AutoModelForSeq2SeqLM.from_pretrained(current_model)
-                
-                # Create the pipeline with controlled parameters
-                pipe = pipeline(
-                    "text2text-generation",
-                    model=model,
-                    tokenizer=tokenizer,
-                    max_length=120,
-                    do_sample=True,
-                    temperature=0.3,
-                    top_p=0.95,
-                    top_k=10,
-                    repetition_penalty=1.03
+        try:
+            # Use HuggingFacePipeline
+            tokenizer = AutoTokenizer.from_pretrained(self.model_id)
+            model = AutoModelForSeq2SeqLM.from_pretrained(self.model_id)
+            
+            # Create the pipeline
+            pipe = pipeline(
+                "text2text-generation",
+                model=model,
+                tokenizer=tokenizer,
+                max_length=120                                       
                 )
-                
-                # Create LangChain wrapper
-                llm = HuggingFacePipeline(pipeline=pipe)
-                
-                # Test the model
-                test_response = llm.invoke("Summarize this review: Great product, very helpful!")
-                
-                if test_response and len(test_response) > 10:
-                    logger.info(f"✅ Model {current_model} successfully initialized")
-                    self.llm = llm
-                    return llm
-                
-            except Exception as e:
-                logger.warning(f"Model {current_model} failed: {e}")
-        
-        raise RuntimeError("Failed to initialize any HuggingFace model")
+            
+            # Create LangChain wrapper
+            self.llm = HuggingFacePipeline(pipeline=pipe)
+            logger.info(f"Model {self.model_id} initialized")
+            return self.llm
+            
+        except Exception as e:
+            logger.error(f"Model initialization failed: {e}")
+            raise
     
     def rewrite_query(self, query: str) -> str:
         """
@@ -439,19 +349,7 @@ class ModelManager:
         Returns:
             Rewritten query
         """
-        if self.llm is None:
-            return query
-            
-        if len(query) < 10:
-            # For very short queries, use the model to expand
-            prompt = f"Rewrite this search query to improve retrieval from product reviews: '{query}'"
-            try:
-                rewritten = self.llm.invoke(prompt)
-                logger.info(f"Query rewritten to: {rewritten}")
-                return rewritten
-            except Exception as e:
-                logger.warning(f"Query rewriting failed: {e}")
-        
+        # Simply return the original query - no rewriting
         return query
         
     def get_prompt_template(self, query: str) -> str:
@@ -470,44 +368,44 @@ class ModelManager:
         if any(term in query_lower for term in ["compare", "difference", "versus", "vs", "better"]):
             return """Compare the following product reviews to answer the question:
             
-Context from reviews:
-{context}
+        Context from reviews:
+        {context}
 
-Question: {question}
+        Question: {question}
 
-Provide a balanced comparison highlighting the key differences based on these reviews."""
+        Provide a balanced comparison highlighting the key differences based on these reviews."""
         
         # Summary queries
         elif any(term in query_lower for term in ["summary", "overview", "brief", "summarize"]):
             return """Summarize the key points from these reviews:
-            
-Context from reviews:
-{context}
 
-Question: {question}
+        Context from reviews:
+        {context}
 
-Provide a concise summary of the main trends and opinions."""
+        Question: {question}
+
+        Provide a concise summary of the main trends and opinions."""
         
         # Specific feature queries
         elif any(term in query_lower for term in ["feature", "function", "capability", "work", "performs"]):
             return """Analyze how specific features are discussed in these reviews:
             
-Context from reviews:
-{context}
+        Context from reviews:
+        {context}
 
-Question: {question}
+        Question: {question}
 
-Focus on the functionality and performance aspects mentioned in the reviews."""
+        Focus on the functionality and performance aspects mentioned in the reviews."""
         
         # Default template
         return """Analyze the following reviews to answer the question comprehensively (more than just yes or no).
 
-Context from reviews:
-{context}
+        Context from reviews:
+        {context}
 
-Question: {question}
+        Question: {question}
 
-Provide a detailed, insightful answer based on the review context."""
+        Provide a detailed, insightful answer based on the review context."""
 
 
 class FeedbackCollector:
@@ -611,7 +509,7 @@ class AmazonReviewsRAG:
         # Load and process data
         self.df = self.data_processor.load_reviews(self.csv_path, self.limit)
         self.review_docs = self.data_processor.convert_to_documents(self.df)
-        self.chunks = self.chunker.hierarchical_chunking(self.review_docs)
+        self.chunks = self.chunker.chunk_documents(self.review_docs)
         
         # Initialize vector store and retrieval system
         self.vectorstore = self.vector_store_manager.create_vector_store(self.chunks)
@@ -656,7 +554,7 @@ class AmazonReviewsRAG:
     
     def _process_query(self, query: str, filters: Optional[Dict] = None):
         """
-        Multi-stage retrieval and generation pipeline.
+        Vector-based retrieval and generation pipeline.
         
         Args:
             query: User query
@@ -665,21 +563,18 @@ class AmazonReviewsRAG:
         Returns:
             Query results with answer and source documents
         """
-        logger.info(f"Processing query through multi-stage pipeline: '{query}'")
+        logger.info(f"Processing query: '{query}'")
         start_time = time.time()
         
         try:
-            # Stage 1: Query rewriting and expansion
-            rewritten_query = self.model_manager.rewrite_query(query)
+            # Stage 1: Direct vector retrieval
+            initial_docs = self.retrieval_system.retrieve_documents(query, filters)
+            logger.info(f"Retrieved {len(initial_docs)} documents using vector search")
             
-            # Stage 2: Hybrid retrieval
-            initial_docs = self.retrieval_system.retrieve_documents(rewritten_query, filters)
-            logger.info(f"Retrieved {len(initial_docs)} initial documents")
-            
-            # Stage 3: Re-ranking based on relevance
+            # Stage 2: Re-ranking based on relevance
             ranked_docs = self.retrieval_system.evaluate_relevance(query, initial_docs)
             
-            # Filter to high-relevance documents (score > 5)
+            # Filter to high-relevance documents
             top_docs = [doc for doc, score in ranked_docs if score > 5][:4]
             
             if not top_docs and ranked_docs:
@@ -688,7 +583,7 @@ class AmazonReviewsRAG:
             
             logger.info(f"Selected {len(top_docs)} most relevant documents")
             
-            # Stage 4: Generate response with dynamically selected prompt
+            # Stage 3: Generate response with dynamically selected prompt
             context = "\n\n".join([doc.page_content for doc in top_docs])
             
             prompt_template = self.model_manager.get_prompt_template(query)
