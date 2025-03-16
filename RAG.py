@@ -127,12 +127,6 @@ class DataProcessor:
         
         logger.info(f"Created {len(documents)} document objects")
         return documents
-    
-    @staticmethod
-    def _extract_category(product_id: str) -> str:
-        """Extract product category from ID (placeholder implementation)"""
-        # This would be replaced with actual category lookup in production
-        return "Unknown"
 
 
 class TextChunker:
@@ -190,7 +184,7 @@ class VectorStoreManager:
         """
         logger.info("Creating vector store with embeddings")
         
-        # Use a single reliable embedding model
+        # reliable embedding model
         embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
         
         try:
@@ -243,7 +237,6 @@ class RetrievalSystem:
         Returns:
             List of retrieved documents
         """
-        # Only use vector search directly
         return self.vectorstore.similarity_search(query, k=8, filter=filters)
     
     def evaluate_relevance(self, query: str, documents: List[Document]) -> List[Tuple[Document, float]]:
@@ -259,7 +252,6 @@ class RetrievalSystem:
         """
         logger.info(f"Evaluating relevance of {len(documents)} retrieved documents")
         
-        # Simple heuristic scoring based on keyword overlap
         query_terms = set(query.lower().split())
         scored_docs = []
         
@@ -318,7 +310,7 @@ class ModelManager:
             Initialized language model
         """
         try:
-            # Use HuggingFacePipeline
+            # HuggingFacePipeline
             tokenizer = AutoTokenizer.from_pretrained(self.model_id)
             model = AutoModelForSeq2SeqLM.from_pretrained(self.model_id)
             
@@ -349,7 +341,6 @@ class ModelManager:
         Returns:
             Rewritten query
         """
-        # Simply return the original query - no rewriting
         return query
         
     def get_prompt_template(self, query: str) -> str:
@@ -469,8 +460,6 @@ class AmazonReviewsRAG:
             chunk_overlap: Overlap between text chunks
             cache_size: Size of query cache
         """
-        # Load environment variables
-        load_dotenv()
         
         # Configuration
         self.csv_path = csv_path
@@ -693,11 +682,11 @@ def main():
                     # Format rating
                     if isinstance(rating, (int, float)):
                         if rating >= 4.0:
-                            rating_text = f'{rating} ⭐ (Positive)'
+                            rating_text = f'{rating} (Positive)'
                         elif rating <= 2.0:
-                            rating_text = f'{rating} ⭐ (Negative)'
+                            rating_text = f'{rating} (Negative)'
                         else:
-                            rating_text = f'{rating} ⭐ (Neutral)'
+                            rating_text = f'{rating} (Neutral)'
                     else:
                         rating_text = str(rating)
                         
