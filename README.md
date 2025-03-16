@@ -19,7 +19,7 @@ The Amazon Reviews RAG (Retrieval Augmented Generation) System is a tool for ana
 ### Prerequisites
 
 - Python 3.8 or higher
-- An Amazon food product reviews dataset in CSV format (see [Data Format](#data-format) below)
+- An Amazon food product reviews dataset in CSV format (see [Data Format]([#data-format](https://www.kaggle.com/datasets/arhamrumi/amazon-product-reviews)) below)
 
 ### Installation
 
