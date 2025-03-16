@@ -1,8 +1,8 @@
-# Amazon Reviews RAG System
+# Amazon Food Reviews RAG System
 
 ## Overview
 
-The Amazon Reviews RAG (Retrieval Augmented Generation) System is a tool for analyzing and extracting insights from Amazon food product reviews using state-of-the-art natural language processing techniques. It combines vector search with language models to provide intelligent answers to questions about food product reviews.
+The Amazon Food Reviews RAG (Retrieval Augmented Generation) System is a tool for analyzing and extracting insights from Amazon food product reviews using state-of-the-art natural language processing techniques. It combines vector search with language models to provide intelligent answers to questions about food product reviews.
 
 > **Note:** This project is currently under active development. New features and improvements will be added regularly.
 
@@ -25,7 +25,7 @@ The Amazon Reviews RAG (Retrieval Augmented Generation) System is a tool for ana
 
 1. Clone this repository
 ```bash
-git clone https://github.com/yourusername/amazon-reviews-rag.git
+git clone https://github.com/yourusername/AmazonFood-RAG-Imp.git
 cd AmazonFood-RAG-Imp
 ```
 
