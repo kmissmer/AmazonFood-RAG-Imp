@@ -127,6 +127,11 @@ class DataProcessor:
         
         logger.info(f"Created {len(documents)} document objects")
         return documents
+    @staticmethod
+    def _extract_category(product_id: str) -> str:
+        """Extract product category from ID (placeholder implementation)"""
+        # This would be replaced with actual category lookup in production
+        return "Unknown"
 
 
 class TextChunker:
