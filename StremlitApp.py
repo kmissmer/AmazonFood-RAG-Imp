@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 # Import your existing RAG system
 from RAG import AmazonReviewsRAG, DataProcessor
 
-# Configure logging
+    # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s: %(message)s',
@@ -41,7 +41,7 @@ st.markdown("""
         --text-color: #E6D299;
         --border-color: #D4AF37;
     }
-    
+        
     /* Main header with gold gradient */
     .main-header {
         font-size: 2.5rem;
@@ -49,7 +49,7 @@ st.markdown("""
         margin-bottom: 1rem;
         text-shadow: 1px 1px 2px rgba(0,0,0,0.1);
     }
-    
+        
     /* Rating colors */
     .rating-positive {
         color: var(--dark-gold);

@@ -309,31 +309,52 @@ class ModelManager:
         
     def initialize_model(self):
         """
-        Simple model initialization without fallbacks.
+        Improved model initialization with proper device handling.
         
         Returns:
             Initialized language model
         """
         try:
-            # HuggingFacePipeline
-            tokenizer = AutoTokenizer.from_pretrained(self.model_id)
-            model = AutoModelForSeq2SeqLM.from_pretrained(self.model_id)
+            # Import necessary components
+            from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
+            import torch
+            from langchain_huggingface import HuggingFacePipeline
             
-            # Create the pipeline
+            # Check if CUDA is available
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            logger.info(f"Using device: {device}")
+            
+            # Load tokenizer with safety measures
+            tokenizer = AutoTokenizer.from_pretrained(
+                self.model_id,
+                trust_remote_code=False
+            )
+            
+            # Load model with safety measures and proper device placement
+            model = AutoModelForSeq2SeqLM.from_pretrained(
+                self.model_id,
+                trust_remote_code=False,
+                torch_dtype=torch.float32,  # Use float32 for better compatibility
+                device_map="auto"  # Let the model decide the best device mapping
+            )
+            
+            # Create the pipeline with proper model placement
             pipe = pipeline(
                 "text2text-generation",
                 model=model,
                 tokenizer=tokenizer,
-                max_length=120                                       
-                )
+                max_length=120,
+                device_map="auto"  # Let pipeline decide device placement                                    
+            )
             
             # Create LangChain wrapper
             self.llm = HuggingFacePipeline(pipeline=pipe)
-            logger.info(f"Model {self.model_id} initialized")
+            logger.info(f"Model {self.model_id} initialized successfully")
             return self.llm
             
         except Exception as e:
             logger.error(f"Model initialization failed: {e}")
+            logger.exception("Detailed traceback:")
             raise
     
     def rewrite_query(self, query: str) -> str:
