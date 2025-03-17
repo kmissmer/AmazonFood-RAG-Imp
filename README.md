@@ -39,6 +39,27 @@ pip install -r requirements.txt
 streamlit run StreamlitApp.py
 ```
 
+### Known Issues and Configuration
+If you encounter the PyTorch error `RuntimeError: Tried to instantiate class '__path__._path', but it does not exist!` when running the Streamlit app, you'll need to disable Streamlit's file watcher. 
+
+Create a `.streamlit/config.toml` file with:
+```toml
+[server]
+fileWatcherType = "none"
+```
+
+Alternatively, you can run the app with:
+```bash
+streamlit run StreamlitApp.py --server.fileWatcherType=none
+```
+
+From my experience and testing, this error will likely not mess up the functionality of the program, but it is slightly annoying
+
+The error is due to an interaction between PyTorch and Streamlit's file watcher functionality.
+
+
+
+
 ### Data Format
 
 The system expects an Amazon food product reviews dataset with the following columns:
